@@ -15,6 +15,12 @@ on:
 env:
   GO_VERSION: ">=1.21"
 
+permissions:
+  # deployments permission to deploy GitHub pages website
+  deployments: write
+  # contents permission to update benchmark contents in gh-pages branch
+  contents: write
+
 jobs:
   # This job is responsible for preparation of the build
   # environment variables.
@@ -47,20 +53,20 @@ jobs:
     # container: github/super-linter:v4
     needs: [prepare]
 
-    services:
-      # Label used to access the service container
-      redis:
-        # Docker Hub image
-        image: redis
-        # Set health checks to wait until redis has started
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          # Maps the container port to the host machine
-          - 6379:6379
+    # services:
+    #   # Label used to access the service container
+    #   redis:
+    #     # Docker Hub image
+    #     image: redis
+    #     # Set health checks to wait until redis has started
+    #     options: >-
+    #       --health-cmd "redis-cli ping"
+    #       --health-interval 10s
+    #       --health-timeout 5s
+    #       --health-retries 5
+    #     ports:
+    #       # Maps the container port to the host machine
+    #       - 6379:6379
 
     steps:
       - name: Checkout repository
@@ -78,12 +84,26 @@ jobs:
           apt-get install ca-certificates make -y
           update-ca-certificates
           go mod tidy
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Run unit tests
-        env:
-          REDIS_HOST: redis
-          REDIS_PORT: 6379
-          REDIS_SERVER: "redis:6379"
         run: |
-          export REDIS_SERVER="$REDIS_HOST:$REDIS_PORT"
           CI_RUN=${CI} make test
+
+      - name: Run benchmark
+        run: |
+          go test -bench=. -benchmem ./... -run=^# | tee output.txt
+
+      - name: Store benchmark result
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          tool: "go"
+          output-file-path: output.txt
+          fail-on-alert: true
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          comment-on-alert: true
+          summary-always: true
+          # auto-push only if it's on main branch
+          auto-push: false
+          gh-pages-branch: "gh-pages"
+          benchmark-data-dir-path: "docs"

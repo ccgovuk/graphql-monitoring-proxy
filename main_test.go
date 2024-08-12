@@ -34,14 +34,13 @@ func (suite *Tests) SetupTest() {
 			JSONDecoder:           json.Unmarshal,
 		},
 	)
-	cacheStats = &CacheStats{}
 
 	// Initialize a simple in-memory cache client for testing purposes
-	cfg.Cache.Client = libpack_cache.New(5 * time.Minute)
+	libpack_cache.New(5 * time.Minute)
 	parseConfig()
 	enableApi()
 	StartMonitoringServer()
-	cfg.Logger = libpack_logging.NewLogger()
+	cfg.Logger = libpack_logging.New().SetMinLogLevel(libpack_logging.GetLogLevel(getDetailsFromEnv("LOG_LEVEL", "info")))
 	// Setup environment variables here if needed
 	os.Setenv("GMP_TEST_STRING", "testValue")
 	os.Setenv("GMP_TEST_INT", "123")
@@ -109,6 +108,32 @@ func (suite *Tests) Test_envVariableSetting() {
 	for _, tt := range tests {
 		suite.Run(tt.name, func() {
 			result := getDetailsFromEnv(tt.envKey, tt.defaultValue)
+			assert.Equal(tt.expected, result)
+		})
+	}
+}
+
+func (suite *Tests) Test_getDetailsFromEnv() {
+	tests := []struct {
+		name         string
+		key          string
+		defaultValue interface{}
+		envValue     string
+		expected     interface{}
+	}{
+		{"string value", "TEST_STRING", "default", "envValue", "envValue"},
+		{"int value", "TEST_INT", 0, "123", 123},
+		{"bool value", "TEST_BOOL", false, "true", true},
+		{"default value", "NON_EXISTENT", "default", "", "default"},
+	}
+
+	for _, tt := range tests {
+		suite.Run(tt.name, func() {
+			if tt.envValue != "" {
+				os.Setenv("GMP_"+tt.key, tt.envValue)
+				defer os.Unsetenv("GMP_" + tt.key)
+			}
+			result := getDetailsFromEnv(tt.key, tt.defaultValue)
 			assert.Equal(tt.expected, result)
 		})
 	}

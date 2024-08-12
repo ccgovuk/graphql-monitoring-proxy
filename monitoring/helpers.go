@@ -1,129 +1,182 @@
 package libpack_monitoring
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"unicode"
 
 	libpack_config "github.com/lukaszraczylo/graphql-monitoring-proxy/config"
 )
 
-func (ms *MetricsSetup) get_metrics_name(name string, labels map[string]string) (complete_name string) {
+var sortedLabelKeysCache = struct {
+	m sync.Map
+}{}
+
+func (ms *MetricsSetup) get_metrics_name(name string, labels map[string]string) string {
 	const unknownPodName = "unknown"
-	var sb strings.Builder
+	var buf bytes.Buffer
 
-	// Prepare default labels without initializing a new map
-	podName := unknownPodName
-	if hn, err := os.Hostname(); err == nil {
-		podName = hn
-	}
+	podName := getPodName()
 	if labels == nil {
-		labels = map[string]string{
-			"microservice": libpack_config.PKG_NAME,
-			"pod":          podName,
-		}
+		labels = defaultLabels(podName)
 	} else {
-		if _, exists := labels["microservice"]; !exists {
-			labels["microservice"] = libpack_config.PKG_NAME
-		}
-		if _, exists := labels["pod"]; !exists {
-			labels["pod"] = podName
-		}
+		ensureDefaultLabels(&labels, podName)
 	}
 
-	// Prefix handling
 	if ms.metrics_prefix != "" {
-		sb.WriteString(ms.metrics_prefix)
-		sb.WriteString("_")
+		buf.WriteString(ms.metrics_prefix)
+		buf.WriteByte('_')
 	}
-	sb.WriteString(name)
+	buf.WriteString(name)
 
-	// Append labels if any
 	if len(labels) > 0 {
-		sb.WriteString("{")
-
-		keys := make([]string, 0, len(labels))
-		for k := range labels {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-
-		for i, k := range keys {
-			if i > 0 {
-				sb.WriteString(",")
-			}
-			sb.WriteString(k)
-			sb.WriteString("=\"")
-			sb.WriteString(labels[k])
-			sb.WriteString("\"")
-		}
-		sb.WriteString("}")
+		buf.WriteByte('{')
+		appendSortedLabels(&buf, labels)
+		buf.WriteByte('}')
 	}
 
-	return sb.String()
+	return buf.String()
 }
 
-// validate_metrics_name validates the name of the metric to adhere to the Prometheus naming conventions
-// https://prometheus.io/docs/practices/naming/
-func validate_metrics_name(name string) error {
-	var sb strings.Builder // Use strings.Builder for efficient string concatenation
-
-	// Track if the last character was an underscore to avoid duplicate underscores
-	lastWasUnderscore := false
-
-	for _, r := range name {
-		// Convert spaces to underscores and skip non-alphanumeric characters except underscores
-		if r == ' ' || (unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_') {
-			if r == ' ' || r == '_' {
-				if lastWasUnderscore {
-					continue // Skip if the previous character was also an underscore
-				}
-				r = '_' // Convert spaces to underscores
-				lastWasUnderscore = true
-			} else {
-				lastWasUnderscore = false
-			}
-			sb.WriteRune(r) // Add valid characters to the builder
-		}
+func getPodName() string {
+	const unknownPodName = "unknown"
+	if hn, err := os.Hostname(); err == nil {
+		return hn
 	}
-	// Trim leading and trailing underscores
-	name_new := strings.Trim(sb.String(), "_")
-
-	// Check if the processed name matches the original input
-	if name_new != name {
-		return fmt.Errorf("Invalid metric name: %s, expected %s", name, name_new)
-	}
-	return nil
+	return unknownPodName
 }
 
-func compile_metrics_with_labels(name string, labels map[string]string) string {
-	var totalLength int
-	totalLength += len(name)
-	for k, v := range labels {
-		totalLength += len(k) + len(v) + 2
+func defaultLabels(podName string) map[string]string {
+	return map[string]string{
+		"microservice": libpack_config.PKG_NAME,
+		"pod":          podName,
+	}
+}
+
+func ensureDefaultLabels(labels *map[string]string, podName string) {
+	if *labels == nil {
+		*labels = make(map[string]string)
+	}
+	if _, exists := (*labels)["microservice"]; !exists {
+		(*labels)["microservice"] = libpack_config.PKG_NAME
+	}
+	if _, exists := (*labels)["pod"]; !exists {
+		(*labels)["pod"] = podName
+	}
+}
+
+func appendSortedLabels(buf *bytes.Buffer, labels map[string]string) {
+	keys := getSortedKeys(labels)
+	for i, k := range keys {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		buf.WriteString(k)
+		buf.WriteString(`="`)
+		buf.WriteString(labels[k])
+		buf.WriteByte('"')
+	}
+}
+
+func getSortedKeys(labels map[string]string) []string {
+	labelsKey := labelsToString(labels)
+
+	// Check if the sorted keys are already cached
+	if keys, ok := sortedLabelKeysCache.m.Load(labelsKey); ok {
+		return keys.([]string)
 	}
 
-	var sb strings.Builder
-	sb.Grow(totalLength + 1)
-
-	sb.WriteString(name)
-
-	// Collect keys and sort them
+	// Compute the sorted keys
 	keys := make([]string, 0, len(labels))
 	for k := range labels {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 
-	// Append sorted key-value pairs to the builder
+	// Store the sorted keys in the cache
+	sortedLabelKeysCache.m.Store(labelsKey, keys)
+
+	return keys
+}
+
+func labelsToString(labels map[string]string) string {
+	keys := make([]string, 0, len(labels))
+	for k := range labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	var sb strings.Builder
 	for _, k := range keys {
-		sb.WriteString("_")
 		sb.WriteString(k)
-		sb.WriteString("_")
+		sb.WriteByte('=')
 		sb.WriteString(labels[k])
+		sb.WriteByte(';')
+	}
+	return sb.String()
+}
+
+func validate_metrics_name(name string) error {
+	cleanedName := clean_metric_name(name)
+
+	finalName := strings.Trim(cleanedName, "_")
+
+	if finalName != name {
+		return fmt.Errorf("invalid metric name: %s, expected %s", name, finalName)
+	}
+	return nil
+}
+
+func clean_metric_name(name string) string {
+	var buf bytes.Buffer
+	lastWasUnderscore := false
+
+	for _, r := range name {
+		if is_allowed_rune(r) {
+			if is_special_rune(r) {
+				if lastWasUnderscore {
+					continue
+				}
+				r = '_'
+				lastWasUnderscore = true
+			} else {
+				lastWasUnderscore = false
+			}
+			buf.WriteRune(r)
+		} else if !lastWasUnderscore {
+			buf.WriteByte('_')
+			lastWasUnderscore = true
+		}
 	}
 
-	return sb.String()
+	return strings.Trim(buf.String(), "_")
+}
+
+func is_allowed_rune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == ' ' || r == '_'
+}
+
+func is_special_rune(r rune) bool {
+	return r == ' ' || r == '_'
+}
+
+func compile_metrics_with_labels(name string, labels map[string]string) string {
+	var buf bytes.Buffer
+
+	buf.WriteString(name)
+
+	keys := getSortedKeys(labels)
+
+	for _, k := range keys {
+		buf.WriteByte('_')
+		buf.WriteString(k)
+		buf.WriteByte('_')
+		buf.WriteString(labels[k])
+	}
+
+	return buf.String()
 }

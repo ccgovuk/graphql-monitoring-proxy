@@ -9,12 +9,15 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/proxy"
 	"github.com/gookit/goutil/envutil"
 	graphql "github.com/lukaszraczylo/go-simple-graphql"
+	libpack_cache "github.com/lukaszraczylo/graphql-monitoring-proxy/cache"
 	libpack_config "github.com/lukaszraczylo/graphql-monitoring-proxy/config"
 	libpack_logging "github.com/lukaszraczylo/graphql-monitoring-proxy/logging"
 )
 
-var cfg *config
-var once sync.Once
+var (
+	cfg  *config
+	once sync.Once
+)
 
 // function get value from the env where the value can be anything
 func getDetailsFromEnv[T any](key string, defaultValue T) T {
@@ -62,7 +65,8 @@ func parseConfig() {
 		}
 		return strings.Split(urls, ",")
 	}()
-	c.Logger = libpack_logging.NewLogger()
+	c.LogLevel = strings.ToUpper(getDetailsFromEnv("LOG_LEVEL", "info"))
+	c.Logger = libpack_logging.New().SetMinLogLevel(libpack_logging.GetLogLevel(c.LogLevel)).SetFieldName("timestamp", "ts").SetFieldName("message", "msg").SetShowCaller(false)
 	c.Server.HealthcheckGraphQL = getDetailsFromEnv("HEALTHCHECK_GRAPHQL_URL", "")
 	c.Client.GQLClient = graphql.NewConnection()
 	c.Client.GQLClient.SetEndpoint(c.Server.HealthcheckGraphQL)
@@ -88,7 +92,19 @@ func parseConfig() {
 	c.HasuraEventCleaner.EventMetadataDb = getDetailsFromEnv("HASURA_EVENT_METADATA_DB", "")
 	cfg = &c
 
-	enableCache() // takes close to no resources, but can be used with dynamic query cache
+	if cfg.Cache.CacheEnable || cfg.Cache.CacheRedisEnable {
+		cacheConfig := &libpack_cache.CacheConfig{
+			Logger: cfg.Logger,
+			TTL:    cfg.Cache.CacheTTL,
+		}
+		if cfg.Cache.CacheRedisEnable {
+			cacheConfig.Redis.Enable = true
+			cacheConfig.Redis.URL = cfg.Cache.CacheRedisURL
+			cacheConfig.Redis.Password = cfg.Cache.CacheRedisPassword
+			cacheConfig.Redis.DB = cfg.Cache.CacheRedisDB
+		}
+		libpack_cache.EnableCache(cacheConfig)
+	}
 	loadRatelimitConfig()
 	once.Do(func() {
 		go enableApi()

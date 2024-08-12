@@ -1,13 +1,14 @@
-package libpack_cache
+package libpack_cache_memory
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
 
 // Assume that New function initializes the cache and it is defined somewhere in the libpack_cache package.
 
-func BenchmarkCacheSet(b *testing.B) {
+func BenchmarkMemCacheSet(b *testing.B) {
 	cache := New(30 * time.Second) // Initializing the cache with a TTL of 30 seconds
 	key := "benchmark-key"
 	value := []byte("benchmark-value")
@@ -19,7 +20,7 @@ func BenchmarkCacheSet(b *testing.B) {
 	}
 }
 
-func BenchmarkCacheGet(b *testing.B) {
+func BenchmarkMemCacheGet(b *testing.B) {
 	cache := New(30 * time.Second) // Initializing the cache
 	key := "benchmark-key"
 	value := []byte("benchmark-value")
@@ -32,7 +33,7 @@ func BenchmarkCacheGet(b *testing.B) {
 	}
 }
 
-func BenchmarkCacheExpire(b *testing.B) {
+func BenchmarkMemCacheExpire(b *testing.B) {
 	key := "benchmark-expire-key"
 	value := []byte("benchmark-value")
 	ttl := 5 * time.Millisecond // Setting a short TTL for quick expiration
@@ -45,10 +46,37 @@ func BenchmarkCacheExpire(b *testing.B) {
 	}
 }
 
-func BenchmarkCacheStats(b *testing.B) {
+func BenchmarkMemCacheStats(b *testing.B) {
 	cache := New(30 * time.Second) // Initializing the cache
 	key := "benchmark-key"
 	value := []byte("benchmark-value")
 	cache.Set(key, value, 5*time.Second) // Pre-set a value to retrieve
 	cache.Get(key)
+}
+
+func BenchmarkCacheSet(b *testing.B) {
+	cache := New(5 * time.Second)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cache.Set(fmt.Sprintf("key-%d", i), []byte("value"), 5*time.Second)
+	}
+}
+
+func BenchmarkCacheGet(b *testing.B) {
+	cache := New(5 * time.Second)
+	cache.Set("test-key", []byte("test-value"), 5*time.Second)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cache.Get("test-key")
+	}
+}
+
+func BenchmarkCacheDelete(b *testing.B) {
+	cache := New(5 * time.Second)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		key := fmt.Sprintf("key-%d", i)
+		cache.Set(key, []byte("value"), 5*time.Second)
+		cache.Delete(key)
+	}
 }
